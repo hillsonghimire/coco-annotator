@@ -8,8 +8,8 @@ backlog = 2048
 workers = 1
 worker_class = 'eventlet'
 worker_connections = 1000
-timeout = 30
-keepalive = 2
+timeout = 1000
+keepalive = 3
 
 reload = Config.DEBUG
 preload = Config.PRELOAD

@@ -3,7 +3,7 @@ from flask_login import login_required, current_user
 from werkzeug.datastructures import FileStorage
 from flask import send_file
 
-from ..util import query_util, coco_util
+from ..util import query_util, coco_util, thumbnails
 from database import (
     ImageModel,
     DatasetModel,
@@ -51,6 +51,10 @@ flag_args = reqparse.RequestParser()
 flag_args.add_argument('image_id', location='json', type=int)
 flag_args.add_argument('is_flagged', location='json', type=bool, default=False)
 
+image_preds = reqparse.RequestParser()
+image_preds.add_argument('image_id', required=True)
+image_preds.add_argument('predictions', required=True)
+
 @api.route('/')
 class Images(Resource):
 
@@ -86,6 +90,7 @@ class Images(Resource):
         """ Creates an image """
         args = image_upload.parse_args()
         image = args['image']
+        logger.info(f'Image post with filename: {image.filename}')
 
         dataset_id = args['dataset_id']
         try:
@@ -94,24 +99,28 @@ class Images(Resource):
             return {'message': 'dataset does not exist'}, 400
 
         # check if current user exists or dataset is public
-        if current_user or dataset['is_public']:
-        
+        # if current_user or dataset['is_public']:
+        if True:
             directory = dataset.directory
             path = os.path.join(directory, image.filename)
 
             if os.path.exists(path):
+                logger.info(f'file already exists {image.filename}')
                 return {'message': 'file already exists'}, 400
 
-            pil_image = Image.open(io.BytesIO(image.read()))
-
-            pil_image.save(path)
-
-            image.close()
-            pil_image.close()
-            db_image = ImageModel.create_from_path(path, dataset_id, current_user.username).save()
-            # to do @sriram
-            # generate thubnail immediately after uploading
-            return db_image.id
+            try:
+                pil_image = Image.open(io.BytesIO(image.read()))
+                pil_image.save(path)
+                image.close()
+                pil_image.close()
+                db_image = ImageModel.create_from_path(path, dataset_id).save()
+                # to do @sriram
+                # generate thubnail immediately after uploading
+                thumbnails.generate_thumbnail(db_image)
+            except OSError:
+                return {'message': 'Can not read image from file'}, 400
+            logger.info(f'Image post with filename: {image.filename} and id {db_image.id}')
+            return {'image_id': db_image.id}, 200
         else:
             return {'message': 'Upload not permitted'}, 400
 
@@ -134,12 +143,12 @@ class ImageId(Resource):
 
         width = args.get('width')
         height = args.get('height')
-        
+
         if not width:
             width = image.width
         if not height:
             height = image.height
-        
+
         pil_image = image.open_thumbnail() if thumbnail else Image.open(image.path)
 
         pil_image.thumbnail((width, height), Image.ANTIALIAS)
@@ -224,7 +233,7 @@ class ImageCopyAnnotations(Resource):
 @api.route('/<int:image_id>/coco')
 class ImageCoco(Resource):
 
-    @login_required
+    #@login_required
     def get(self, image_id):
         """ Returns coco of image and annotations """
         image = current_user.images.filter(id=image_id).exclude('deleted_date').first()
@@ -237,13 +246,24 @@ class ImageCoco(Resource):
 
         return coco_util.get_image_coco(image_id)
 
+@api.route('/<int:dataset_id>/<file_name>')
+class FilenameId(Resource):
+
+    def get(self, dataset_id, file_name):
+        """returns image_id for file_name"""
+        image = current_user.images.filter(dataset_id=dataset_id, file_name=file_name, deleted=False).first()
+        if image:
+            return {'image_id': image.id, 'dataset_id': dataset_id, 'file_name': file_name}, 200
+        else:
+            return {'message': 'image not found with the file_name'}, 404
+
 @api.route('/flag')
 class ImageFlag(Resource):
 
     # @login_required
     @api.expect(flag_args)
     def post(self, image_id):
-        
+
         args = flag_args.parse_args()
         image_id = args.get('image_id')
         is_flag = args.get('is_flagged')

@@ -68,6 +68,12 @@ class Config:
     MASK_RCNN_CLASSES = os.getenv("MASK_RCNN_CLASSES", "BG")
 
     DEXTR_FILE = os.getenv("DEXTR_FILE", "/models/dextr_pascal-sbd.h5")
-
+    
+    CACHE_TYPE = os.getenv("CACHE_TYPE", "redis")
+    CACHE_REDIS_HOST = os.getenv("CACHE_REDIS_HOST", "redis")
+    CACHE_REDIS_PORT = os.getenv("CACHE_REDIS_PORT", 6379)
+    CACHE_REDIS_DB = os.getenv("CACHE_REDIS_DB", 0)
+    CACHE_REDIS_URL = os.getenv("CACHE_REDIS_URL", "redis://redis:6379/0")
+    CACHE_DEFAULT_TIMEOUT = os.getenv("CACHE_DEFAULT_TIMEOUT", "500")
 
 __all__ = ["Config"]

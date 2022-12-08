@@ -1,6 +1,7 @@
 from flask import Blueprint
 from flask_restplus import Api
 
+from .cameras import api as ns_cameras
 from .annotations import api as ns_annotations
 from .categories import api as ns_categories
 from .annotator import api as ns_annotator
@@ -41,4 +42,5 @@ api.add_namespace(ns_undo)
 api.add_namespace(ns_models)
 api.add_namespace(ns_admin)
 api.add_namespace(ns_annotator)
+api.add_namespace(ns_cameras)
 

@@ -27,8 +27,8 @@ create_annotation.add_argument('color', location='json')
 
 update_annotation = reqparse.RequestParser()
 update_annotation.add_argument('category_id', type=int, location='json')
-update_annotation.add_argument('bbox', type=list, location='json')
-update_annotation.add_argument('segmentation', type=list, location='json')
+update_annotation.add_argument('bbox', type=list, location='json', default=[])
+update_annotation.add_argument('segmentation', type=list, location='json', default=[])
 
 @api.route('/')
 class Annotation(Resource):
@@ -103,10 +103,10 @@ class AnnotationId(Resource):
 
         if annotation is None:
             return {"message": "Invalid annotation id"}, 400
-
-        image = current_user.images.filter(
-            id=annotation.image_id, deleted=False).first()
-        image.flag_thumbnail()
+        logger.info(f'{annotation.id, annotation.image_id}')
+        if annotation.image_id:
+            image = current_user.images.filter(id=annotation.image_id, deleted=False).first()
+            image.flag_thumbnail()
 
         annotation.update(set__deleted=True,
                           set__deleted_date=datetime.datetime.now())
@@ -142,8 +142,18 @@ class AnnotationId(Resource):
             newAnnotation = current_user.annotations.filter(id=annotation_id).first()
             return query_util.fix_ids(newAnnotation)
 
+
 # @api.route('/<int:annotation_id>/mask')
 # class AnnotationMask(Resource):
 #     def get(self, annotation_id):
 #         """ Returns the binary mask of an annotation """
 #         return query_util.fix_ids(AnnotationModel.objects(id=annotation_id).first())
+
+@api.route('/<int:image_id>/predictions')
+class ImageId(Resource):
+
+    @login_required
+    def post(self):
+        return {}
+
+

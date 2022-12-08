@@ -9,9 +9,26 @@ import os
 
 
 class DatasetModel(DynamicDocument):
-    
+
     id = SequenceField(primary_key=True)
     name = StringField(required=True, unique=True)
+    display_name = StringField()
+    display_image = StringField(default="")
+    country = StringField()
+    province = StringField()
+    city = StringField()
+
+    latitude = FloatField()
+    longitude = FloatField()
+
+    start_date = StringField()
+    end_date = StringField()
+
+    images_prefix = StringField()
+
+    purpose = StringField()
+    video_links = ListField(StringField())
+
     directory = StringField()
     thumbnails = StringField()
     categories = ListField(default=[])
@@ -30,6 +47,14 @@ class DatasetModel(DynamicDocument):
     is_public = BooleanField(default=False)
     # is_visible_public = BooleanField(default=False)
     # is_annotate_public = BooleanField(default=False)
+
+    weights_url = StringField()
+    frame_width = IntField()
+    frame_height = IntField()
+    slice_width = IntField()
+    slice_height = IntField()
+    interval = IntField()
+    save_empty = BooleanField()
 
     def save(self, *args, **kwargs):
 
@@ -103,6 +128,25 @@ class DatasetModel(DynamicDocument):
         task.save()
         
         cel_task = scan_dataset.delay(task.id, self.id)
+
+        return {
+            "celery_id": cel_task.id,
+            "id": task.id,
+            "name": task.name
+        }
+
+    def delete_empty_images(self, start_date, end_date):
+
+        from workers.tasks import delete_empty_images_in_dataset
+
+        task = TaskModel(
+            name=f"Deleting empty images (no annotations) in {self.name}",
+            dataset_id=self.id,
+            group="Directory Image Scan"
+        )
+        task.save()
+        
+        cel_task = delete_empty_images_in_dataset.delay(task.id, self.id, start_date, end_date)
 
         return {
             "celery_id": cel_task.id,

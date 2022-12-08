@@ -15,8 +15,10 @@ from database import (
     SessionEvent
 )
 
-api = Namespace('annotator', description='Annotator related operations')
+import logging
+logger = logging.getLogger('gunicorn.error')
 
+api = Namespace('annotator', description='Annotator related operations')
 
 @api.route('/data')
 class AnnotatorData(Resource):
@@ -212,4 +214,83 @@ class AnnotatorId(Resource):
 
         return data
 
+@api.route('/predictions')
+class PredictionsData(Resource):
 
+    @profile
+    #@login_required
+    def post(self):
+        """
+        Called when saving data from the edge predictor client
+        """
+        data = request.get_json(force=True)
+        predictions = data.get('predictions', [])
+        image_id = data.get('image_id')
+
+        logger.info(f'predictions: {data}')
+
+        image_model = ImageModel.objects(id=image_id).first()
+
+        if image_model is None:
+            return {'success': False, 'message': 'Image does not exist'}, 400
+
+        # Check if dataset exists
+        db_dataset = DatasetModel.objects(id=image_model.dataset_id).first()
+        if db_dataset is None:
+            return {'success': False, 'message': 'Could not find associated dataset'}
+
+        categories = CategoryModel.objects.all()
+        annotations = AnnotationModel.objects(image_id=image_id)
+
+        added_predictions = []
+        added_categories = set()
+        # Iterate every prediction from the data predictions
+        for prediction in predictions:
+            category_id = prediction.get('category_id', None)
+            category_name = prediction.get('category', None)
+
+            if category_name is not None:
+                db_category = categories.filter(name=category_name).first()
+                category_id = db_category.id
+            else:
+                # Find corresponding category object in the database
+                db_category = categories.filter(id=category_id).first()
+
+            if db_category is None:
+                continue
+
+            segmentation = prediction.get('segmentation')
+            bbox = prediction.get('bbox')
+            isbbox = prediction.get('isbbox')
+            area = prediction.get('area', None)
+            track_id = prediction.get('track_id', None)
+            if area is None:
+                area = int(bbox[2]*bbox[3])
+            try:
+                annotation = AnnotationModel(
+                    image_id=image_id,
+                    category_id=category_id,
+                    segmentation=segmentation,
+                    bbox=bbox,
+                    isbbox=isbbox,
+                    area=area,
+                    track_id=track_id
+                )
+                annotation.save()
+                added_predictions.append({'success': True, 'annotation_id': annotation.id})
+                added_categories.add(category_id)
+            except (ValueError, TypeError) as e:
+                added_predictions.append({'success': False, 'message': str(e)})
+
+        num_annotations = len(added_predictions)
+        image_model.update(
+            set__annotated=(num_annotations > 0),
+            set__category_ids=list(added_categories),
+            set__regenerate_thumbnail=True,
+            set__num_annotations=num_annotations,
+            set__is_predicted_with=True
+        )
+
+        thumbnails.generate_thumbnail(image_model)
+
+        return {"success": True, "annotations": added_predictions}, 200

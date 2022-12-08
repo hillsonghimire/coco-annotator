@@ -38,12 +38,12 @@ class ImageFolderHandler(FileSystemEventHandler):
         
         image = ImageModel.objects(path=event.src_path).first()
 
-        if image is None and event.event_type != 'deleted':
-            self._log(f'Adding new file to database: {path}')
-            image = ImageModel.create_from_path(path).save()
-            generate_thumbnail(image)
+        #if image is None and event.event_type != 'deleted':
+        #    self._log(f'Adding new file to database: {path}')
+        #    image = ImageModel.create_from_path(path).save()
+        #    generate_thumbnail(image)
 
-        elif event.event_type == 'moved':
+        if event.event_type == 'moved':
             self._log(f'Moving image from {event.src_path} to {path}')
             image.update(path=path)
             generate_thumbnail(image)

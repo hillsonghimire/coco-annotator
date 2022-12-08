@@ -104,3 +104,10 @@ services:
       - 5672:5672
     networks:
       - cocoannotator
+  redis:
+    image: redis
+    container_name: annotator_redis
+    ports:
+      - 6379:6379
+    networks:
+      - cocoannotator

@@ -23,6 +23,7 @@ from .api import blueprint as api
 from .util import query_util, thumbnails
 from .authentication import login_manager
 from .sockets import socketio
+from .cache import cache
 
 import threading
 import requests
@@ -30,9 +31,7 @@ import logging
 import time
 import os
 
-
 connect_mongo('webserver')
-
 
 def create_app():
 
@@ -44,6 +43,8 @@ def create_app():
                   static_folder='../dist')
 
     flask.config.from_object(Config)
+    cache.init_app(flask)
+    #cache = Cache(flask)
 
     CORS(flask, supports_credentials=True)
 
@@ -55,12 +56,13 @@ def create_app():
     # Remove all poeple who were annotating when
     # the server shutdown
     ImageModel.objects.update(annotating=[])
-    thumbnails.generate_thumbnails()
+    #thumbnails.generate_thumbnails()
 
     return flask
 
 
 app = create_app()
+#cache = Cache(app)
 
 logger = logging.getLogger('gunicorn.error')
 app.logger.handlers = logger.handlers

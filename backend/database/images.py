@@ -33,16 +33,17 @@ class ImageModel(DynamicDocument):
     id = SequenceField(primary_key=True)
     dataset_id = IntField(required=True)
     category_ids = ListField(default=[])
+    instances = DictField(defalut={})
 
     # Absolute path to image file
     path = StringField(required=True, unique=True)
     width = IntField(required=True)
     height = IntField(required=True)
     file_name = StringField()
-    
+
     # True if the image is annotated
     annotated = BooleanField(default=False)
-    
+
     # use it for external annoatation added, apart from coco-frontend
     cs_annotated = ListField(default=[])
     cs_annotating = BooleanField(default=False)
@@ -51,12 +52,14 @@ class ImageModel(DynamicDocument):
     # Poeple currently annotation the image
     annotating = ListField(default=[])
     num_annotations = IntField(default=0)
-    
+
     thumbnail_url = StringField()
     image_url = StringField()
     coco_url = StringField()
     date_captured = DateTimeField()
     uploaded_by = StringField()
+
+    is_predicted_with = BooleanField(default=False)
 
     metadata = DictField()
     license = IntField()

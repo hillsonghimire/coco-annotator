@@ -43,6 +43,8 @@ class AnnotationModel(DynamicDocument):
     milliseconds = IntField(default=0)
     events = EmbeddedDocumentListField(Event)
 
+    track_id = StringField()
+
     def __init__(self, image_id=None, **data):
 
         from .images import ImageModel

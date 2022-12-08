@@ -1,10 +1,11 @@
 from flask import request
-from flask_restplus import Namespace, Resource, reqparse
+from flask_restplus import Namespace, Resource, reqparse, inputs
 from flask_login import login_required, current_user
 from werkzeug.datastructures import FileStorage
 from mongoengine.errors import NotUniqueError
 from mongoengine.queryset.visitor import Q
 from threading import Thread
+from flask import send_file
 
 from google_images_download import google_images_download as gid
 
@@ -19,18 +20,32 @@ from database import (
     ExportModel
 )
 
+from PIL import Image
 import datetime
 import json
 import os
+import io
+
+from ..cache import cache
 
 import logging
 logger = logging.getLogger('gunicorn.error')
 
 api = Namespace('dataset', description='Dataset related operations')
 
+dataset_filter = reqparse.RequestParser()
+dataset_filter.add_argument('country', type=str)
+dataset_filter.add_argument('province', type=str)
+dataset_filter.add_argument('city', type=str)
 
 dataset_create = reqparse.RequestParser()
 dataset_create.add_argument('name', required=True)
+dataset_create.add_argument('country', type=str)
+dataset_create.add_argument('province', type=str)
+dataset_create.add_argument('city', type=str)
+dataset_create.add_argument('latitude', type=float)
+dataset_create.add_argument('longitude', type=float)
+dataset_create.add_argument('purpose', type=str)
 dataset_create.add_argument('categories', type=list, required=False, location='json',
                             help="List of default categories for sub images")
 
@@ -39,6 +54,9 @@ page_data.add_argument('page', default=1, type=int)
 page_data.add_argument('limit', default=20, type=int)
 page_data.add_argument('folder', default='', help='Folder for data')
 page_data.add_argument('order', default='file_name', help='Order to display images')
+#page_from_to_data = reqparse.RequestParser()
+page_data.add_argument('start_date', type=str, default='')
+page_data.add_argument('end_date', type=str, default='')
 
 delete_data = reqparse.RequestParser()
 delete_data.add_argument('fully', default=False, type=bool,
@@ -51,9 +69,23 @@ export = reqparse.RequestParser()
 export.add_argument('categories', type=str, default=None, required=False, help='Ids of categories to export')
 
 update_dataset = reqparse.RequestParser()
+update_dataset.add_argument('display_name', type=str, help="Name to display on dashboard")
 update_dataset.add_argument('categories', location='json', type=list, help="New list of categories")
+update_dataset.add_argument('country', type=str, help="country of cctv")
+update_dataset.add_argument('province', type=str, help="province of cctv")
+update_dataset.add_argument('city', type=str, help="city of cctv")
+update_dataset.add_argument('latitude', type=float, help="GPS latitude of the cctv location")
+update_dataset.add_argument('longitude', type=float, help="GPS longitude of the cctv location")
+update_dataset.add_argument('images_prefix', type=str)
+update_dataset.add_argument('start_date', type=str)
+update_dataset.add_argument('end_date', type=str)
+update_dataset.add_argument('purpose', type=str)
+update_dataset.add_argument('youtube_links', type=list)
 update_dataset.add_argument('default_annotation_metadata', location='json', type=dict,
-                            help="Default annotation metadata")                            
+                            help="Default annotation metadata")
+
+dataset_youtube = reqparse.RequestParser()
+dataset_youtube.add_argument('youtube_links', location='json', type=list, default=[])
 
 dataset_generate = reqparse.RequestParser()
 dataset_generate.add_argument('keywords', location='json', type=list, default=[],
@@ -68,14 +100,47 @@ cs_data.add_argument('rejected', location='json', type=list, default=[], help="L
 cs_data.add_argument('dummy', location='json', type=bool, default=False)
 
 dataset_refresh = reqparse.RequestParser()
-dataset_refresh.add_argument('dataset_id', location='json', type=int)
+dataset_refresh.add_argument('start_date', type=int)
+dataset_refresh.add_argument('end_date', type=int)
+
+pie_limits = reqparse.RequestParser()
+pie_limits.add_argument('start_date', default='', type=str)
+pie_limits.add_argument('end_date', default='99991231', type=str)
+pie_limits.add_argument('frequency', default='', type=str)
+#dataset_country = reqparse.RequestParser()
+#dataset_country.add_argument('country', required=True)
+
+cctv_config = reqparse.RequestParser()
+cctv_config.add_argument('weights_url', default=None, type=str)
+cctv_config.add_argument('frame_height', default=None, type=int)
+cctv_config.add_argument('frame_width', default=None, type=int)
+cctv_config.add_argument('slice_height', default=None, type=int)
+cctv_config.add_argument('slice_width', default=None, type=int)
+cctv_config.add_argument('interval', default=15, type=int)
 
 @api.route('/')
 class Dataset(Resource):
-    @login_required
+    #@login_required
+    @api.expect(dataset_filter)
     def get(self):
-        """ Returns all datasets """
+        """ Returns all datasets or filtered by args"""
+        args = dataset_filter.parse_args()
+        country = args['country']
+        province = args['province']
+        city = args['city']
+        if country:
+            if province:
+                if city:
+                    return query_util.fix_ids(current_user.datasets.filter(deleted=False, country=country, province=province, city=city).only('id', 'display_name', 'country', 'province', 'city', 'latitude', 'longitude', 'start_date', 'purpose').all())
+                return query_util.fix_ids(current_user.datasets.filter(deleted=False, country=country, province=province).all())
+            return query_util.fix_ids(current_user.datasets.filter(deleted=False, country=country).all())
+        #data = current_user.datasets.filter(deleted=False).all()
+        #logger.info(f'type, {type(data)}')
+        #aggr = current_user.datasets.filter(deleted=False).aggregate({"$project": {"id": "$id", "name": "$display_name"}})
+        #logger.info(f'type, {type(aggr)}')
+        #return query_util.fix_ids(data)
         return query_util.fix_ids(current_user.datasets.filter(deleted=False).all())
+        #return query_util.fix_ids(json.dumps(list(current_user.datasets.filter(deleted=False).aggregate({"$project": {"id": "$id", "name": "$display_name"}}))))
 
     @api.expect(dataset_create)
     @login_required
@@ -83,12 +148,17 @@ class Dataset(Resource):
         """ Creates a dataset """
         args = dataset_create.parse_args()
         name = args['name']
+        country = args['country']
+        province = args['province']
+        city = args['city']
+        latitude = args['latitude']
+        longitude = args['longitude']
         categories = args.get('categories', [])
 
         category_ids = CategoryModel.bulk_create(categories)
 
         try:
-            dataset = DatasetModel(name=name, categories=category_ids)
+            dataset = DatasetModel(name=name, display_name=name, categories=category_ids, country=country, province=province, city=city, latitude=latitude, longitude=longitude)
             dataset.save()
         except NotUniqueError:
             return {'message': 'Dataset already exists. Check the undo tab to fully delete the dataset.'}, 400
@@ -111,6 +181,43 @@ def download_images(output_dir, args):
             "print_size": False
         })
 
+@api.route('/countries')
+class DatasetCountires(Resource):
+    def get(self):
+        datasets = current_user.datasets.only('country')
+        countries = set()
+        for dataset in datasets:
+            if dataset.country is not None:
+                countries.add(dataset.country)
+        return {"countries": list(countries)}, 200
+
+@api.route('/<country>/provinces')
+class DatasetProvinces(Resource):
+    #@api.expect(dataset_country)
+    def get(self, country):
+        #args = dataset_country.parse_args()
+        #country = args['country']
+        datasets = current_user.datasets.filter(country=country)
+        provinces = set()
+        for dataset in datasets:
+            if dataset.province is not None:
+                provinces.add(dataset.province)
+        return {"provinces": list(provinces)}, 200
+
+@api.route('/<country>/<province>/cities')
+class DatasetCities(Resource):
+    def get(self, country, province):
+        datasets = current_user.datasets.filter(country=country, province=province)
+        cities = set()
+        for dataset in datasets:
+            if dataset.city is not None:
+                cities.add(dataset.city)
+        return {"cities": list(cities)}, 200
+
+@api.route('/<country>/<province>/<city>')
+class DatasetFiltered(Resource):
+    def get(self, country, province, city):
+        return query_util.fix_ids(current_user.datasets.filter(country=country, province=province, city=city, deleted=False).all()), 200
 
 @api.route('/<int:dataset_id>/generate')
 class DatasetGenerate(Resource):
@@ -132,6 +239,44 @@ class DatasetGenerate(Resource):
 
         return {"success": True}
 
+@api.route('/<int:dataset_id>/config')
+class DatasetConfig(Resource):
+
+    def get(self, dataset_id):
+        """return configuration settings for cctv camera"""
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        return query_util.fix_ids(dataset), 200
+
+    @login_required
+    @api.expect(cctv_config)
+    def post(self, dataset_id):
+        """updates cctv camera configuration"""
+        args = cctv_config.parse_args()
+        weights_url = args['weights_url']
+        frame_width = args['frame_width']
+        frame_height = args['frame_height']
+        slice_width = args['slice_width']
+        slice_height = args['slice_height']
+        interval = args['interval']
+
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+
+        if weights_url:
+             dataset.update(set__weights_url=weights_url)
+        if frame_width:
+             dataset.update(set__frame_width=frame_width)
+        if frame_height:
+             dataset.update(set__frame_height=frame_height)
+        if slice_width:
+             dataset.update(set__slice_width=slice_width)
+        if slice_height:
+             dataset.update(set__slice_height=slice_height)
+        if interval:
+             dataset.update(set__interval=interval)
+
+        #dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        #return querty_util.fix_ids{dataset}, 200
+        return {}, 200
 
 @api.route('/<int:dataset_id>/users')
 class DatasetMembers(Resource):
@@ -168,11 +313,216 @@ class DatasetCleanMeta(Resource):
 
         return {'success': True}
 
+@api.route('/<int:dataset_id>/pie_stats')
+class DatasetPiestats(Resource):
+
+    @api.expect(pie_limits)
+    @cache.cached(timeout=60, query_string=True)
+    def get(self, dataset_id):
+
+        args = pie_limits.parse_args()
+        start_date = args['start_date']
+        end_date = args['end_date']
+
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+
+        images = ImageModel.objects(dataset_id=dataset.id, deleted=False, file_name__gte=start_date, file_name__lte=end_date, num_annotations__gt=0)
+        annotations = AnnotationModel.objects(dataset_id=dataset.id, deleted=False)
+        category_count = dict()
+        #to do: filters annotations by images from start to end
+        for category in dataset.categories:
+            cat_name = CategoryModel.objects(id=category).first()['name']
+            cat_count = annotations.filter(category_id=category).count()
+            category_count.update({str(cat_name): cat_count})
+        return category_count, 200
+
+@api.route('/<int:dataset_id>/line_stats')
+class DatasetLinestats(Resource):
+
+    @api.expect(pie_limits)
+    @cache.cached(timeout=60, query_string=True)
+    def get(self, dataset_id):
+
+        args = pie_limits.parse_args()
+        start_date = args['start_date']
+        end_date = args['end_date']
+
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+
+        res = ImageModel.objects(dataset_id=dataset.id, deleted=False, file_name__gte=start_date, file_name__lte=end_date, num_annotations__gt=0).aggregate(
+            {
+                "$project": {
+                    "day": {
+                        "$substr": ["$file_name", 0, 8]
+                    },
+                    "category_ids": 1
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$category_ids"
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "day": "$day",
+                        "category_id": "$category_ids"
+                    }, 
+                    "count": {
+                        "$sum": 1
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$_id.day",
+                    "stats": {
+                        "$push": {
+                            "category_id": "$_id.category_id",
+                            "count": "$count"
+                        }
+                    }
+                }
+            },
+            {
+                "$sort": {"_id": 1}
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "date": "$_id",
+                    "stats": 1
+                }
+            }
+        )
+
+        line_data = {'data': list(res)}
+
+        logger.info(f'days, {res}')
+
+        return line_data, 200
+
+@api.route('/<int:dataset_id>/new_line_stats')
+class DatasetNLinestats(Resource):
+
+    @api.expect(pie_limits)
+    @cache.cached(timeout=60, query_string=True)
+    def get(self, dataset_id):
+
+        args = pie_limits.parse_args()
+        start_date = args['start_date']
+        end_date = args['end_date']
+
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+
+
+        res = ImageModel.objects(dataset_id=dataset.id, deleted=False, file_name__gte=start_date, file_name__lte=end_date, num_annotations__gt=0).aggregate(
+            {
+                "$project": {
+                    "day": {
+                        "$substr": ["$file_name", 0, 8]
+                    },
+                    "instances": {
+                        "$objectToArray": "$instances"
+                    }
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$instances"
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "day": "$day",
+                        "category_id": "$instances.k"
+                    }, 
+                    "count": {
+                        "$sum": "$instances.v"
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$_id.day",
+                    "stats": {
+                        "$push": {
+                            "category_id": "$_id.category_id",
+                            "count": "$count"
+                        }
+                    }
+                }
+            },
+            {
+                "$sort": {"_id": 1}
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "date": "$_id",
+                    "stats": 1
+                }
+            }
+        )
+
+        line_data = {'data': list(res)}
+
+        logger.info(f'days, {res}')
+
+        return line_data, 200
+
+@api.route('/<int:dataset_id>/highlights')
+class DatasetHighlights(Resource):
+
+    def get(self, dataset_id):
+
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+        directory = dataset.directory+'.highlights'
+        #logger.info(f'highlights at, {directory}')
+        if not os.path.isdir(directory):
+            return {"highlights": []}, 400
+
+        highlights = [f for f in sorted(os.listdir(directory)) if not f.startswith('.')]
+        # to-do, send imahes from .highlight folder
+
+        return {"highlights": highlights}, 200
+
+@api.route('/<int:dataset_id>/highlights/<file_name>')
+class DatasetHighlightsImage(Resource):
+
+    def get(self, dataset_id, file_name):
+        """ sends the highlight image"""
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+        directory = dataset.directory+'.highlights'
+        if not os.path.isdir(directory):
+            return {"message": "No highlights"}, 400
+        file_path = os.path.join(directory, file_name)
+        if not os.path.isfile(file_path):
+            return {"message": "Invalid highlight"}, 400
+        pil_image = Image.open(file_path)
+        image_io = io.BytesIO()
+        pil_image = pil_image.convert("RGB")
+        pil_image.save(image_io, "JPEG", quality=90)
+        image_io.seek(0)
+        return send_file(image_io, attachment_filename=file_name, as_attachment=False)
 
 @api.route('/<int:dataset_id>/stats')
 class DatasetStats(Resource):
 
     # @login_required
+    @cache.cached(timeout=60, query_string=True)
     def get(self, dataset_id):
         """ All users in the dataset """
         args = dataset_generate.parse_args()
@@ -182,7 +532,7 @@ class DatasetStats(Resource):
             return {"message": "Invalid dataset id"}, 400
 
         images = ImageModel.objects(dataset_id=dataset.id, deleted=False)
-        num_images_cs_not_annotated = len(ImageModel.objects(dataset_id=dataset.id, cs_annotated=[], deleted=False))
+        #num_images_cs_not_annotated = len(ImageModel.objects(dataset_id=dataset.id, cs_annotated=[], deleted=False))
         annotated_images = images.filter(annotated=True)
         annotations = AnnotationModel.objects(dataset_id=dataset_id, deleted=False)
 
@@ -193,11 +543,13 @@ class DatasetStats(Resource):
 
             # Calculate the annotation count in the current category in this dataset
             cat_name = CategoryModel.objects(id=category).first()['name']
-            cat_count = AnnotationModel.objects(dataset_id=dataset_id, category_id=category, deleted=False).count()
+            #cat_count = AnnotationModel.objects(dataset_id=dataset_id, category_id=category, deleted=False).count()
+            cat_count = annotations.filter(category_id=category).count()
             category_count.update({str(cat_name): cat_count})
 
             # Calculate the annotated images count in the current category in this dataset
-            image_count = len(AnnotationModel.objects(dataset_id=dataset_id, category_id=category, deleted=False).distinct('image_id'))
+            #image_count = len(AnnotationModel.objects(dataset_id=dataset_id, category_id=category, deleted=False).distinct('image_id'))
+            image_count = len(annotations.filter(category_id=category).distinct('image_id'))
             image_category_count.update({str(cat_name): image_count})
 
         stats = {
@@ -205,7 +557,7 @@ class DatasetStats(Resource):
                 'Users': dataset.get_users().count(),
                 'Images': images.count(),
                 'Annotated Images': annotated_images.count(),
-                'CS Annotated Images': num_images_cs_not_annotated,
+                #'CS Annotated Images': num_images_cs_not_annotated,
                 'Annotations': annotations.count(),
                 'Categories': len(dataset.categories),
                 'Time Annotating (s)': (images.sum('milliseconds') or 0) / 1000
@@ -248,6 +600,7 @@ class DatasetcsStats(Resource):
 class DatasetCats(Resource):
 
     # @login_required
+    @cache.cached(timeout=60, query_string=True)
     def get(self, dataset_id):
         """ All users in the dataset """
 
@@ -277,13 +630,14 @@ class DatasetId(Resource):
 
         if dataset is None:
             return {"message": "Invalid dataset id"}, 400
-        
+
         if not current_user.can_delete(dataset):
             return {"message": "You do not have permission to delete the dataset"}, 403
 
         dataset.update(set__deleted=True, set__deleted_date=datetime.datetime.now())
         return {"success": True}
 
+    @login_required
     @api.expect(update_dataset)
     def post(self, dataset_id):
 
@@ -294,12 +648,45 @@ class DatasetId(Resource):
             return {"message": "Invalid dataset id"}, 400
 
         args = update_dataset.parse_args()
+        display_name = args.get('display_name')
         categories = args.get('categories')
+        country = args.get('country')
+        province = args.get('province')
+        city = args.get('city')
+        latitude = args.get('latitude')
+        longitude = args.get('longitude')
+        start_date = args.get('start_date')
+        end_date = args.get('end_date')
+        images_prefix = args.get('images_prefix')
         default_annotation_metadata = args.get('default_annotation_metadata')
         set_default_annotation_metadata = args.get('set_default_annotation_metadata')
+        camera_purpose = args.get('purpose')
+        youtube_links = args.get('youtube_links', [])
 
+        if youtube_links != []:
+            dataset.update(add_to_set__youtube_links=youtube_links)
+
+        if camera_purpose is not None:
+            dataset.update(set__purpose=camera_purpose)
+
+        if display_name is not None:
+            dataset.update(set__display_name=display_name)
+        if country is not None:
+            dataset.update(set__country=country)
+        if province is not None:
+            dataset.update(set__province=province)
+        if city is not None:
+            dataset.update(set__city=city)
+        if latitude is not None:
+            dataset.update(set__latitude=latitude)
+        if longitude is not None:
+            dataset.update(set__longitude=longitude)
+        if start_date is not None:
+            dataset.update(set__start_date=start_date)
         if categories is not None:
             dataset.categories = CategoryModel.bulk_create(categories)
+        if  images_prefix is not None:
+            dataset.update(set__images_prefix=images_prefix)
 
         if default_annotation_metadata is not None:
 
@@ -309,7 +696,7 @@ class DatasetId(Resource):
                     update[f'set__metadata__{key}'] = value
 
             dataset.default_annotation_metadata = default_annotation_metadata
-            
+
             if len(update.keys()) > 0:
                 AnnotationModel.objects(dataset_id=dataset.id, deleted=False)\
                     .update(**update)
@@ -321,6 +708,39 @@ class DatasetId(Resource):
 
         return {"success": True}
 
+@api.route('/<int:dataset_id>/youtube')
+class DatasetIdYoutube(Resource):
+
+    def get(self, dataset_id):
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+        return {"dataset_id": dataset_id, "youtube_links": dataset.youtube_links}, 200
+
+    @api.expect(dataset_youtube)
+    @login_required
+    def post(self, dataset_id):
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+        args = dataset_youtube.parse_args()
+        youtube_links = args.get('youtube_links', [])
+        if youtube_links != []:
+            logger.info(f'youtube_links: {youtube_links}')
+            dataset.update(pull_all__youtube_links=youtube_links)
+        return {"success": True}
+
+    @api.expect(dataset_youtube)
+    @login_required
+    def delete(self, dataset_id):
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        if dataset is None:
+            return {"message": "Invalid dataset id"}, 400
+        args = dataset_youtube.parse_args()
+        youtube_links = args.get('youtube_links', [])
+        if youtube_links != []:
+            dataset.update(pull_all__youtube_links=youtube_links)
+        return {"success": True}
 
 @api.route('/<int:dataset_id>/share')
 class DatasetIdShare(Resource):
@@ -344,7 +764,8 @@ class DatasetIdShare(Resource):
 @api.route('/data')
 class DatasetData(Resource):
     @api.expect(page_data)
-    @login_required
+    #@login_required
+    @cache.cached(timeout=60, query_string=True)
     def get(self):
         """ Endpoint called by dataset viewer client """
 
@@ -365,7 +786,7 @@ class DatasetData(Resource):
             dataset_json['numberImages'] = images.count()
             dataset_json['numberAnnotated'] = images.filter(annotated=True).count()
             dataset_json['permissions'] = dataset.permissions(current_user)
-            
+
             first = images.first()
             if first is not None:
                 dataset_json['first_image_id'] = images.first().id
@@ -385,6 +806,7 @@ class DatasetDataId(Resource):
     @api.expect(page_data)
     # @login_required
     # ************Add condition if dataset is_publc?
+    @cache.cached(timeout=60, query_string=True)
     def get(self, dataset_id):
         """ Endpoint called by image viewer client """
 
@@ -394,13 +816,34 @@ class DatasetDataId(Resource):
         folder = parsed_args.get('folder')
         order = parsed_args.get('order')
 
+        start_date = parsed_args.get('start_date')
+        end_date = parsed_args.get('end_date')
+
         args = dict(request.args)
 
         # Check if dataset exists
         dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
         if dataset is None:
             return {'message', 'Invalid dataset id'}, 400
-                
+
+        dataset_start_date = str(dataset.start_date)
+
+        numeric_filter = filter(str.isdigit, dataset_start_date)
+        dataset_start_date = "".join(numeric_filter)
+
+        logger.info(f'date, {dataset_start_date}')
+        if dataset.end_date:
+            dataset_end_date = str(dataset.end_date)
+        else:
+            last_image = current_user.images.filter(dataset_id=dataset_id, deleted=False).only('file_name').order_by('-file_name').first()
+            if last_image:
+                dataset_end_date = last_image.file_name.split('_')[-1].split('-')[0]
+            else:
+                dataset_end_date = dataset_start_date
+
+        numeric_filter = filter(str.isdigit, dataset_end_date)
+        dataset_end_date = "".join(numeric_filter)
+
         # Make sure folder starts with is in proper format
         if len(folder) > 0:
             folder = folder[0].strip('/') + folder[1:]
@@ -415,14 +858,14 @@ class DatasetDataId(Resource):
         # Remove parsed arguments
         for key in parsed_args:
             args.pop(key, None)
-        
+
         # Generate query from remaining arugments
         query = {}
         for key, value in args.items():
             lower = value.lower()
             if lower in ["true", "false"]:
                 value = json.loads(lower)
-            
+
             if len(lower) != 0:
                 query[key] = value
 
@@ -472,16 +915,29 @@ class DatasetDataId(Resource):
             query_dict_2['annotated'] = False
             query_build &= (Q(**query_dict_1) | Q(**query_dict_2))
 
+        if start_date != '' or end_date != '':
+            if dataset.images_prefix is not None:
+                logger.info(f'using prefix {dataset.images_prefix}')
+                start_date = dataset.images_prefix+start_date
+                end_date = dataset.images_prefix+end_date
+            query_dict3 = {}
+            if start_date != '':
+                query_dict3['file_name__gte'] = start_date
+            if end_date != '':
+                query_dict3['file_name__lte'] = end_date
+            query_build &= Q(**query_dict3)
+
         # Perform mongodb query
         images = current_user.images \
             .filter(query_build) \
-            .order_by(order).only('id', 'file_name', 'annotating', 'annotated', 'num_annotations')
-        
+            .order_by('-file_name').only('id', 'file_name', 'annotating', 'annotated', 'num_annotations', 'category_ids')
+
         total = images.count()
         pages = int(total/per_page) + 1
-        
+
         images = images.skip(page*per_page).limit(per_page)
         images_json = query_util.fix_ids(images)
+
         # for image in images:
         #     image_json = query_util.fix_ids(image)
 
@@ -497,11 +953,13 @@ class DatasetDataId(Resource):
 
         subdirectories = [f for f in sorted(os.listdir(directory))
                           if os.path.isdir(directory + f) and not f.startswith('.')]
-        
+
         categories = CategoryModel.objects(id__in=dataset.categories).only('id', 'name')
 
         return {
             "total": total,
+            "start_date": dataset_start_date,
+            "end_date": dataset_end_date,
             "per_page": per_page,
             "pages": pages,
             "page": page,
@@ -673,18 +1131,51 @@ class DatasetExport(Resource):
 @api.route('/<int:dataset_id>/coco')
 class DatasetCoco(Resource):
 
-    @login_required
+    #@login_required
     def get(self, dataset_id):
         """ Returns coco of images and annotations in the dataset (only owners) """
         dataset = current_user.datasets.filter(id=dataset_id).first()
 
         if dataset is None:
             return {"message": "Invalid dataset ID"}, 400
-        
+
         if not current_user.can_download(dataset):
             return {"message": "You do not have permission to download the dataset's annotations"}, 403
 
-        return coco_util.get_dataset_coco(dataset)
+        #return coco_util.get_dataset_coco(dataset)
+
+        coco = {
+            'images': [],
+            'categories': [],
+            'annotations': []
+        }
+
+        categories = CategoryModel.objects(deleted=False).exclude('deleted_date').in_bulk(dataset.categories).items()
+
+        for category in categories:
+            category = query_util.fix_ids(category[1])
+
+            del category['deleted']
+            if len(category.get('keypoint_labels', [])) > 0:
+                category['keypoints'] = category.pop('keypoint_labels')
+                category['skeleton'] = category.pop('keypoint_edges')
+            else:
+                del category['keypoint_edges']
+                del category['keypoint_labels']
+
+            coco.get('categories').append(category)
+
+        dataset = query_util.fix_ids(dataset)
+
+        images = ImageModel.objects(deleted=False, dataset_id=dataset.get('id'), annotated=True).exclude('deleted_date')
+        images = query_util.fix_ids(images)
+        annotations = AnnotationModel.objects(deleted=False, dataset_id=dataset.get('id')).exclude('deleted_date', 'paper_object')
+        annotations = query_util.fix_ids(annotations)
+
+        coco['images'] = images
+        coco['annotations'] =  annotations
+
+        return coco, 200
 
     @api.expect(coco_upload)
     @login_required
@@ -731,6 +1222,27 @@ class DatasetScan(Resource):
         
         return dataset.scan()
 
+@api.route('/<int:dataset_id>/delete_empty_images')
+class DatasetDelEmIm(Resource):
+    
+    @api.expect(dataset_refresh)
+    @login_required
+    def get(self, dataset_id):
+
+        args = dataset_refresh.parse_args()
+        start_date = args['start_date']
+        end_date = args['end_date']
+
+        dataset = DatasetModel.objects(id=dataset_id).first()
+        
+        if not dataset:
+            return {'message': 'Invalid dataset ID'}, 400
+        
+        if start_date > end_date:
+            return {'message': 'Invalid date range'}, 400
+        
+        return dataset.delete_empty_images(str(start_date), str(end_date))
+
 @api.route('/<int:dataset_id>/cs_refersh')
 class DatasetRefresh(Resource):
     
@@ -753,3 +1265,16 @@ class DatasetRefresh(Resource):
                 image.update(set__cs_annotating=False, set__cs_annotated=[])
                 image_refresh_count += 1
         return {'image_refresh_count': image_refresh_count, 'total_image_count': image_count, 'images': image_json}
+
+
+@api.route('/<int:dataset_id>/empty_images')
+class DatasetEmptyimages(Resource):
+
+    def get(self, dataset_id):
+        """returns list of images and ids which are predicted yet"""
+
+        #images = ImageModel.objects(deleted=False, dataset_id=dataset_id, is_predicted_with=False).only('id', 'file_name', 'path').order_by('id').all()
+        #images = ImageModel.objects(deleted=False, dataset_id=dataset_id, instances={}).only('id', 'file_name', 'path').order_by('id').all()
+        images = ImageModel.objects(deleted=False, dataset_id=dataset_id, instances__exists=True, instances__ne={}).only('id', 'file_name', 'path').order_by('id').all()
+
+        return query_util.fix_ids(images), 200
