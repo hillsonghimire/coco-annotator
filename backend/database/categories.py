@@ -12,6 +12,7 @@ class CategoryModel(DynamicDocument):
 
     id = SequenceField(primary_key=True)
     name = StringField(required=True, unique_with=['creator'])
+    othernames = ListField(default=[])
     supercategory = StringField(default='')
     color = StringField(default=None)
     metadata = DictField(default={})

@@ -32,6 +32,7 @@ image_upload.add_argument('image', location='files',
                           help='PNG or JPG file')
 image_upload.add_argument('dataset_id', required=True, type=int,
                           help='Id of dataset to insert image into')
+image_upload.add_argument('key', required=False, default=None, type=str, help='secret key for image upload')
 
 image_download = reqparse.RequestParser()
 image_download.add_argument('asAttachment', type=bool, default=False)
@@ -91,8 +92,9 @@ class Images(Resource):
         args = image_upload.parse_args()
         image = args['image']
         logger.info(f'Image post with filename: {image.filename}')
-
         dataset_id = args['dataset_id']
+        dataset_key = args['key']
+
         try:
             dataset = DatasetModel.objects.get(id=dataset_id)
         except:
@@ -100,13 +102,20 @@ class Images(Resource):
 
         # check if current user exists or dataset is public
         # if current_user or dataset['is_public']:
+
+        logger.info(f'Image upload with key {dataset_key}')
+        if dataset_key != dataset.key:
+            return {'message': 'requires a key to upload'}, 403
+
         if True:
             directory = dataset.directory
             path = os.path.join(directory, image.filename)
 
             if os.path.exists(path):
                 logger.info(f'file already exists {image.filename}')
-                return {'message': 'file already exists'}, 400
+                db_image = current_user.images.filter(dataset_id=dataset_id, path=path).first()
+                if db_image is not None:
+                    return {'message': 'file already exists', 'image_id': db_image.id}, 400
 
             try:
                 pil_image = Image.open(io.BytesIO(image.read()))
@@ -118,11 +127,11 @@ class Images(Resource):
                 # generate thubnail immediately after uploading
                 thumbnails.generate_thumbnail(db_image)
             except OSError:
-                return {'message': 'Can not read image from file'}, 400
+                return {'message': 'Can not read image from file'}, 500
             logger.info(f'Image post with filename: {image.filename} and id {db_image.id}')
             return {'image_id': db_image.id}, 200
         else:
-            return {'message': 'Upload not permitted'}, 400
+            return {'message': 'Upload not permitted'}, 403
 
 
 @api.route('/<int:image_id>')

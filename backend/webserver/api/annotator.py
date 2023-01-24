@@ -14,6 +14,7 @@ from database import (
     AnnotationModel,
     SessionEvent
 )
+from mongoengine.queryset.visitor import Q
 
 import logging
 logger = logging.getLogger('gunicorn.error')
@@ -225,14 +226,20 @@ class PredictionsData(Resource):
         """
         data = request.get_json(force=True)
         predictions = data.get('predictions', [])
+        detections = data.get('detections', [])
         image_id = data.get('image_id')
 
-        logger.info(f'predictions: {data}')
+        if predictions == []:
+            predictions = detections
+        logger.info(f'detections: {data}')
+
+        if not isinstance(image_id, int):
+            return {'success': False, 'message': 'image_id is required'}, 404
 
         image_model = ImageModel.objects(id=image_id).first()
 
         if image_model is None:
-            return {'success': False, 'message': 'Image does not exist'}, 400
+            return {'success': False, 'message': 'Image does not exist'}, 404
 
         # Check if dataset exists
         db_dataset = DatasetModel.objects(id=image_model.dataset_id).first()
@@ -245,18 +252,25 @@ class PredictionsData(Resource):
         added_predictions = []
         added_categories = set()
         # Iterate every prediction from the data predictions
+        logger.info(f'predictions: {predictions}')
         for prediction in predictions:
             category_id = prediction.get('category_id', None)
             category_name = prediction.get('category', None)
 
             if category_name is not None:
-                db_category = categories.filter(name=category_name).first()
-                category_id = db_category.id
+                logger.info(f'categegory name: {category_name}')
+                #db_category = categories.filter(name=category_name).first()
+                db_category = categories.filter(Q(name=category_name) | Q(othernames__in=category_name)).first()
+                if db_category is not None:
+                    category_id = db_category.id
+                else:
+                    category_id = 1
             else:
                 # Find corresponding category object in the database
                 db_category = categories.filter(id=category_id).first()
 
             if db_category is None:
+                logger.info(f'db_category is None')
                 continue
 
             segmentation = prediction.get('segmentation')
@@ -267,6 +281,7 @@ class PredictionsData(Resource):
             if area is None:
                 area = int(bbox[2]*bbox[3])
             try:
+                logger.info(f'creating annotation with {image_id, category_id, segmentation, bbox, isbbox, area, track_id}')
                 annotation = AnnotationModel(
                     image_id=image_id,
                     category_id=category_id,

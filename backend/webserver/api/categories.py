@@ -35,6 +35,8 @@ page_data = reqparse.RequestParser()
 page_data.add_argument('page', default=1, type=int)
 page_data.add_argument('limit', default=20, type=int)
 
+name_data = reqparse.RequestParser()
+name_data.add_argument('name', type=str, required=True)
 
 @api.route('/')
 class Category(Resource):
@@ -160,6 +162,30 @@ class Category(Resource):
 
         return {"success": True}
 
+@api.route('/<category_id>/add_name')
+class CategoryName(Resource):
+
+    @api.expect(name_data)
+    @login_required
+    def post(self, category_id):
+        """add other names to category"""
+        args = name_data.parse_args()
+        name = args.get('name')
+        if not name:
+            return {"message": "Invalid category name to update"}, 400
+
+        category = current_user.categories.filter(id=category_id).first()
+        if category is None:
+            return {"message": "Invalid category id"}, 400
+
+        try:
+            category_othernames = category.get('othernames')
+            category_othernames.append(name)
+        except:
+            category_othernames = [name]
+        category.update(set__othernames=category_othernames)
+        category = current_user.categories.filter(id=category_id).first()
+        return {'category': query_util.fix_ids(category)}, 200
 
 @api.route('/data')
 class CategoriesData(Resource):

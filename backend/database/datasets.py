@@ -56,6 +56,8 @@ class DatasetModel(DynamicDocument):
     interval = IntField()
     save_empty = BooleanField()
 
+    key = StringField()
+
     def save(self, *args, **kwargs):
 
         directory = os.path.join(Config.DATASET_DIRECTORY, self.name + '/')

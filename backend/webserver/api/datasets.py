@@ -117,6 +117,7 @@ cctv_config.add_argument('frame_width', default=None, type=int)
 cctv_config.add_argument('slice_height', default=None, type=int)
 cctv_config.add_argument('slice_width', default=None, type=int)
 cctv_config.add_argument('interval', default=15, type=int)
+cctv_config.add_argument('key', default=None, type=str)
 
 @api.route('/')
 class Dataset(Resource):
@@ -244,7 +245,7 @@ class DatasetConfig(Resource):
 
     def get(self, dataset_id):
         """return configuration settings for cctv camera"""
-        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
+        dataset = current_user.datasets.filter(id=dataset_id, deleted=False).exclude('key').first()
         return query_util.fix_ids(dataset), 200
 
     @login_required
@@ -258,6 +259,7 @@ class DatasetConfig(Resource):
         slice_width = args['slice_width']
         slice_height = args['slice_height']
         interval = args['interval']
+        key = args['key']
 
         dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
 
@@ -273,6 +275,8 @@ class DatasetConfig(Resource):
              dataset.update(set__slice_height=slice_height)
         if interval:
              dataset.update(set__interval=interval)
+        if key:
+             dataset.update(set__key=key)
 
         #dataset = current_user.datasets.filter(id=dataset_id, deleted=False).first()
         #return querty_util.fix_ids{dataset}, 200
@@ -765,7 +769,7 @@ class DatasetIdShare(Resource):
 class DatasetData(Resource):
     @api.expect(page_data)
     #@login_required
-    @cache.cached(timeout=60, query_string=True)
+    #@cache.cached(timeout=10, query_string=True)
     def get(self):
         """ Endpoint called by dataset viewer client """
 
