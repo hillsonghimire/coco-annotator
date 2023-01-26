@@ -43,6 +43,9 @@ class DatasetModel(DynamicDocument):
     deleted = BooleanField(default=False)
     deleted_date = DateTimeField()
 
+    # indexes  
+    meta = {'indexes':['dataset_id', 'deleted']}
+    
     # to do
     is_public = BooleanField(default=False)
     # is_visible_public = BooleanField(default=False)

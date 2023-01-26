@@ -71,6 +71,9 @@ class ImageModel(DynamicDocument):
     events = EmbeddedDocumentListField(Event)
     regenerate_thumbnail = BooleanField(default=False)
 
+    # indexes  
+    meta = {'indexes':[('dataset_id', 'deleted'),'file_name', 'annotated']}
+    
     @classmethod
     def create_from_path(cls, path, dataset_id=None, uploader=None):
 

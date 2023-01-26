@@ -25,6 +25,9 @@ class CategoryModel(DynamicDocument):
     keypoint_labels = ListField(default=[])
     keypoint_colors = ListField(default=[])
 
+    # indexes  
+    meta = {'indexes':['deleted']}
+    
     @classmethod
     def bulk_create(cls, categories):
 

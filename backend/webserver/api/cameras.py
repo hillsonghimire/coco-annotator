@@ -49,7 +49,7 @@ class Cameras(Resource):
 
     def get(self, country, province):
 
-        if conutry and province:
+        if country and province:
             return query_util.fix_ids(DatasetModel.objects(deleted=False, country=country, province=province).only('display_name', 'country', 'province', 'city', 'latitude', 'longitude').all())
 
     def get(self, country, province, city):
