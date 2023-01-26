@@ -44,6 +44,9 @@ class AnnotationModel(DynamicDocument):
     events = EmbeddedDocumentListField(Event)
 
     track_id = StringField()
+    
+    # indexes  
+    meta = {'indexes':[('image_id', 'deleted'),'category_id', 'dataset_id']}
 
     def __init__(self, image_id=None, **data):
 
